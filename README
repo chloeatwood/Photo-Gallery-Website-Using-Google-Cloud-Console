@@ -1,0 +1,260 @@
+# SE 4220 Final Project — Gallery Application on GCP
+
+## Overview
+
+This project deploys the **Photo Gallery** web application on Google Cloud Platform (GCP) using Terraform for infrastructure-as-code (IaC). The application allows users to register, log in, upload photos, and search their photo gallery. All infrastructure is provisioned automatically through Terraform.
+
+---
+
+## Architecture
+
+```
+                        ┌─────────────────────────────────────┐
+                        │         GCP Project                  │
+                        │   se-4220-final-project              │
+                        │                                      │
+         Internet       │  ┌──────────────────────────────┐   │
+        ─────────►      │  │        gallery-vpc            │   │
+         HTTP/HTTPS     │  │        (10.0.0.0/16)          │   │
+                        │  │                               │   │
+                        │  │  ┌────────────────────────┐  │   │
+                        │  │  │   gallery-subnet        │  │   │
+                        │  │  │   (10.0.0.0/16)         │  │   │
+                        │  │  │                         │  │   │
+                        │  │  │  ┌──────────────────┐   │  │   │
+                        │  │  │  │  gallery-vm       │   │  │   │
+                        │  │  │  │  e2-standard-2    │   │  │   │
+                        │  │  │  │  Flask :5001      │   │  │   │
+                        │  │  │  └────────┬─────────┘   │  │   │
+                        │  │  │           │              │  │   │
+                        │  │  │  ┌────────▼─────────┐   │  │   │
+                        │  │  │  │  Cloud SQL Proxy  │   │  │   │
+                        │  │  │  └────────┬─────────┘   │  │   │
+                        │  │  └───────────┼─────────────┘  │   │
+                        │  │             │                  │   │
+                        │  │  ┌──────────▼──────────────┐  │   │
+                        │  │  │  Cloud SQL MySQL 8.0     │  │   │
+                        │  │  │  gallery-db              │  │   │
+                        │  │  │  (private IP only)       │  │   │
+                        │  │  └─────────────────────────┘  │   │
+                        │  └──────────────────────────────┘   │
+                        │                                      │
+                        │  ┌──────────────────────────────┐   │
+                        │  │  Cloud Storage Bucket         │   │
+                        │  │  gallery-photos-se4220        │   │
+                        │  │  (photo uploads)              │   │
+                        │  └──────────────────────────────┘   │
+                        └─────────────────────────────────────┘
+```
+
+### Components
+
+| Resource | Name | Spec |
+|---|---|---|
+| VPC Network | gallery-vpc | Custom, no auto subnets |
+| Subnet | gallery-subnet | 10.0.0.0/16, us-central1 |
+| Firewall | allow-http | TCP 80, 443 |
+| Firewall | allow-ssh | TCP 22 |
+| Firewall | allow-app | TCP 5001 |
+| Compute VM | gallery-vm | e2-standard-2, Debian 11 |
+| Cloud SQL | gallery-db | MySQL 8.0, db-n1-standard-1 |
+| GCS Bucket | gallery-photos-se4220 | Photo storage |
+| Service Account | gallery-sa | Least-privilege IAM |
+
+---
+
+## Prerequisites
+
+- [Terraform](https://developer.hashicorp.com/terraform/downloads) >= 1.0
+- [Google Cloud SDK](https://cloud.google.com/sdk/docs/install)
+- A GCP project with billing enabled
+- The following APIs enabled:
+  - Compute Engine API
+  - Cloud SQL Admin API
+  - Service Networking API
+  - Cloud Storage API
+
+---
+
+## Setup Instructions
+
+### 1. Authenticate with GCP
+
+```bash
+gcloud auth application-default login
+```
+
+### 2. Clone or prepare the project files
+
+Ensure you have all `.tf` files in your project directory:
+- `main.tf`
+- `variables.tf`
+- `outputs.tf`
+- `provider.tf`
+- `requirements.tf`
+- `backend.tf`
+- `startup.sh`
+
+### 3. Create the GCS backend bucket
+
+```bash
+gsutil mb gs://YOUR-STATE-BUCKET-NAME
+```
+
+### 4. Create a `terraform.tfvars` file
+
+```hcl
+project_id  = "your-gcp-project-id"
+db_password = "your-secure-password"
+bucket_name = "your-photos-bucket-name"
+```
+
+### 5. Initialize Terraform
+
+```bash
+terraform init
+```
+
+### 6. Preview the infrastructure plan
+
+```bash
+terraform plan
+```
+
+### 7. Apply the infrastructure
+
+```bash
+terraform apply
+```
+
+Type `yes` when prompted. This will provision:
+- VPC, subnet, and firewall rules
+- Service account with IAM roles
+- Cloud SQL MySQL instance (takes ~5 minutes)
+- Compute Engine VM
+
+### 8. Deploy the application to the VM
+
+SSH into the VM:
+```bash
+gcloud compute ssh gallery-vm --zone=us-central1-a
+```
+
+Install dependencies and start the Cloud SQL proxy:
+```bash
+pip3 install flask exifread python-dotenv mysql-connector-python google-cloud-storage gunicorn
+sudo mkdir -p /cloudsql
+sudo /usr/local/bin/cloud_sql_proxy -instances=YOUR_PROJECT:us-central1:gallery-db -dir=/cloudsql &
+```
+
+Initialize the database tables:
+```bash
+python3 - <<'EOF'
+import mysql.connector
+conn = mysql.connector.connect(
+    user='gallery', password='YOUR_PASSWORD',
+    database='gallerydb',
+    unix_socket='/cloudsql/YOUR_PROJECT:us-central1:gallery-db'
+)
+c = conn.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS users (
+    userID INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL
+)''')
+c.execute('''CREATE TABLE IF NOT EXISTS photos (
+    PhotoID INT AUTO_INCREMENT PRIMARY KEY,
+    userID VARCHAR(100),
+    CreationTime DATETIME,
+    Title VARCHAR(255),
+    Description TEXT,
+    Tags VARCHAR(255),
+    URL TEXT,
+    ExifData JSON
+)''')
+conn.commit()
+conn.close()
+print("Tables created!")
+EOF
+```
+
+Run the application:
+```bash
+python3 app.py
+```
+
+### 9. Access the application
+
+The app will be available at:
+```
+http://VM_PUBLIC_IP:5001
+```
+
+The public IP is shown in the Terraform outputs after `terraform apply`.
+
+---
+
+## Terraform Outputs
+
+After a successful `terraform apply`, the following outputs are displayed:
+
+| Output | Description |
+|---|---|
+| `vm_public_ip` | Public IP address of the Compute Engine VM |
+| `app_url` | Full URL to access the Gallery application |
+| `cloud_sql_connection_name` | Cloud SQL connection string for the proxy |
+
+---
+
+## File Structure
+
+```
+final-project/
+├── main.tf               # Main infrastructure resources
+├── variables.tf          # Input variable definitions
+├── outputs.tf            # Output value definitions
+├── provider.tf           # Google Cloud provider config
+├── requirements.tf       # Terraform and provider version constraints
+├── backend.tf            # GCS remote state backend config
+├── startup.sh            # VM startup script
+├── terraform.tfvars      # Variable values (do not commit!)
+└── photogallery/
+    ├── app.py            # Flask application
+    ├── requirements.txt  # Python dependencies
+    ├── templates/        # HTML templates
+    └── static/           # CSS, JS, assets
+```
+
+---
+
+## Teardown
+
+To destroy all provisioned infrastructure:
+
+```bash
+terraform destroy
+```
+
+Type `yes` when prompted. This will delete all GCP resources created by Terraform.
+
+> **Note:** The GCS state bucket and photos bucket must be emptied and deleted manually if no longer needed.
+
+---
+
+## Environment Variables
+
+The application requires a `.env` file in the `photogallery/` directory:
+
+```
+FLASK_SECRET_KEY=your-secret-key
+GCS_BUCKET=your-photos-bucket-name
+DB_USER=gallery
+DB_PASSWORD=your-db-password
+DB_NAME=gallerydb
+```
+
+---
+
+## Health Check
+
+The application exposes a login page at `/login` which can be used to validate the deployment is running correctly. A successful HTTP 200 response from `http://VM_IP:5001/login` confirms the app and database connection are working.

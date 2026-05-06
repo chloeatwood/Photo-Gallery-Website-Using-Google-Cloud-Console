@@ -1,0 +1,13 @@
+runtime: python39
+
+entrypoint: gunicorn -b :$PORT app:app
+
+beta_settings:
+  cloud_sql_instances: theta-inkwell-489818-j9:us-central1:team-2-project-3
+
+env_variables:
+  DB_USER: project3User1
+  DB_PASSWORD: ^Hky=,ay6G2GDJJ
+  DB_NAME: photo_gallery
+  GCS_BUCKET: 2026-team-2-project-3-photo-storage-bucket
+  FLASK_SECRET_KEY: 13d2b2b3bd611d8a3c2c9bc201d36339cfcc82e30c6c05e6b4cf3326af9eb039
